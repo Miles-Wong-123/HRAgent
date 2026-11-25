@@ -2,14 +2,16 @@
 # 全项目唯一的「配置中心」：从 .env.local 读取所有配置项，供任何模块取用。
 
 # 导包
-import os, sys
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings
 
 
 # 动态拼接环境文件的路径
-live_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-env_local_path = os.path.join(live_path, ".env.local")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+env_local_path = PROJECT_ROOT / ".env.local"
 
 
 # 配置模型：每个类属性对应 .env.local 里的一项配置（大小写不敏感）
@@ -17,8 +19,8 @@ class Settings(BaseSettings):
 
     # ── 数据库（PostgreSQL）──
     db_host: str = "localhost"   # 主机
-    db_port: int = 5433          # 端口
-    db_name: str = "eduagent"    # 库名
+    db_port: int = 5432          # 端口
+    db_name: str = "hragent"     # 库名
     db_user: str                 # 用户名
     db_password: str             # 密码
 
@@ -34,7 +36,44 @@ class Settings(BaseSettings):
 
     # ── Milvus 向量库 ──
     milvus_host: str = "localhost"  #主机
-    milvus_port: int = 19531        # 端口号
+    milvus_port: int = 19530        # 端口号
+
+
+    # ── 文件上传（JD 与简历共用）──
+    # 相对目录以项目根目录为基准；读取配置不会创建目录。
+    upload_dir: Path = PROJECT_ROOT / "uploads"
+    upload_max_size_mb: int = Field(default=10, gt=0)  # 单个文件大小上限，单位 MiB
+    # 环境变量覆盖列表时使用 JSON，如 ALLOWED_JD_EXTENSIONS='[".pdf", ".txt"]'。
+    # JD 支持格式是后续上传接口的配置约定，具体解析功能仍需实现。
+    allowed_resume_extensions: list[str] = Field(default_factory=lambda: [".pdf"])
+    allowed_jd_extensions: list[str] = Field(default_factory=lambda: [".pdf", ".docx", ".txt"])
+
+    @field_validator("upload_dir")
+    @classmethod
+    def resolve_upload_dir(cls, value: Path) -> Path:
+        value = value.expanduser()
+        if not value.is_absolute():
+            value = PROJECT_ROOT / value
+        return value.resolve()
+
+    @field_validator("allowed_resume_extensions", "allowed_jd_extensions")
+    @classmethod
+    def normalize_extensions(cls, values: list[str]) -> list[str]:
+        if not values:
+            raise ValueError("允许上传的文件扩展名列表不能为空")
+        extensions = []
+        for value in values:
+            extension = value.strip().lower()
+            extension = extension if extension.startswith(".") else f".{extension}"
+            if len(extension) < 2 or not extension[1:].isalnum():
+                raise ValueError("文件扩展名必须是 pdf、.pdf 等格式")
+            if extension not in extensions:
+                extensions.append(extension)
+        return extensions
+
+    @property
+    def upload_max_size_bytes(self) -> int:
+        return self.upload_max_size_mb * 1024 * 1024
 
 
     # ── 大模型（DeepSeek）──

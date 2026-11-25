@@ -1,29 +1,20 @@
-# backend/dependencies.py（数据库部分）
+"""接口共用依赖：数据库会话与经过验证的当前用户。"""
 
-# 类型注解要用的
 from typing import AsyncGenerator
+from uuid import UUID
 
-# 接口要用的
+from typing_extensions import TypedDict
+
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials  # 解析 Authorization: Bearer 头
-
-# 数据库要用的
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
-# jwt鉴权要用的
-# python-jose：JWT 的编解码库
-from jose import JWTError, jwt
-import os,sys
-
-# 配置
 from backend.config import get_settings
+from backend.core.exceptions import AuthenticationError
+from backend.core.security import decode_access_token
+
 settings = get_settings()
-
-#项目文件夹的路径
-eduagents_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(eduagents_path)
-
-
 
 # 创建异步引擎（连接池）
 engine = create_async_engine(
@@ -49,39 +40,63 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
-# 自动从请求头解析 "Authorization: Bearer <token>"
-bearer_scheme = HTTPBearer()
+# 自己处理缺失或错误的认证头，统一返回 401 和 Bearer 响应头。
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+class CurrentUser(TypedDict):
+    user_id: str
+    role: str
+    tenant_id: str
+
 
 async def get_current_user(
-    # Depends(bearer_scheme)：自动取出 Bearer Token；没带或格式错会直接 401
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-    ) -> dict:
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> CurrentUser:
     """
-    FastAPI 依赖：验证 JWT Token，返回当前用户信息。
-    返回 {"user_id": str, "role": str, "tenant_id": str}；Token 无效则抛 401。
+    验证 Token 并查询账号的当前状态，返回可信的用户、角色和公司信息。
+
+    用户被删除、停用、调离原公司或移除 HR 权限后，旧 Token 不再具有原权限。
+    角色以数据库当前值为准，不用 Token 中可能已经过时的角色授权。
+    业务接口仍需用 tenant_id 限定岗位、简历等数据的查询和修改范围。
     """
-    # 预先准备好「401 凭证无效」异常，多处复用
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="无效的认证凭证",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    try:
-        # 用密钥和算法解码 Token；若签名不对/过期，会抛 JWTError
-        payload = jwt.decode(
-            credentials.credentials,            # 实际的 token 字符串
-            settings.jwt_secret_key,            # 验签密钥（和签发时同一个）
-            algorithms=[settings.jwt_algorithm],
-        )
-        user_id:    str = payload.get("sub")                                    # 标准字段 sub = 用户ID
-        role:       str = payload.get("role", "student")                        # 角色
-        tenant_id:  str = payload.get("tenant_id", settings.default_tenant_id)  # 租户
-
-        if not user_id:                         # Token 里没有用户ID，视为无效
-            raise credentials_exception
-
-    except JWTError:                            # 解码失败（签名错/过期等）
+    if credentials is None or credentials.scheme.lower() != "bearer":
         raise credentials_exception
 
-    return {"user_id": user_id, "role": role, "tenant_id": tenant_id}
+    try:
+        payload = decode_access_token(credentials.credentials)
+        # users.id 是 UUID，先校验格式，避免非法 ID 触发数据库类型错误。
+        user_id = str(UUID(payload["sub"]))
+    except (AuthenticationError, ValueError):
+        raise credentials_exception from None
+
+    result = await db.execute(
+        text(
+            "SELECT id, role, tenant_id, is_active FROM users "
+            "WHERE id = :user_id AND tenant_id = :tenant_id"
+        ),
+        {"user_id": user_id, "tenant_id": payload["tenant_id"]},
+    )
+    row = result.fetchone()
+    if row is None:
+        raise credentials_exception
+
+    if not row.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="账号已被禁用，请联系管理员",
+        )
+    if row.role not in {"hr", "admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="当前账号无权访问 HR 系统",
+        )
+
+    return {"user_id": str(row.id), "role": row.role, "tenant_id": row.tenant_id}

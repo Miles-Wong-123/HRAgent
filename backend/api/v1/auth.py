@@ -1,33 +1,34 @@
-# Todo 0 导入依赖
-# 异步编程相关
-import asyncio
-from datetime import datetime, timedelta, timezone
-# 服务器相关
-import uvicorn
-# 接口相关
-from fastapi import APIRouter, HTTPException, status, Depends
-# 数据结构相关
-from pydantic import BaseModel, Field
-# 数据库相关
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
-# jwt鉴权相关
-from jose import jwt
-# 加密相关
-from passlib.context import CryptContext
-# 自定义依赖
-from backend.config import get_settings
-from backend.dependencies import get_db
-from backend.core.logger import get_logger
+"""登录接口：验证数据库中的账号，再使用公共认证工具签发 Token。"""
 
-router = APIRouter()                                               # 本模块的路由集合
+import asyncio
+
+from fastapi import APIRouter, HTTPException, status, Depends
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.config import get_settings
+from backend.core.logger import get_logger
+from backend.core.security import create_access_token, verify_password
+from backend.dependencies import get_db
+
+router = APIRouter()
 logger = get_logger(__name__)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")  # 密码哈希上下文
+
 
 class LoginRequest(BaseModel):
-    """登录请求体。"""
-    username: str = Field(..., description="用户名或邮箱")
-    password: str = Field(..., description="密码")
+    """登录只接收凭证，公司和角色从数据库中的账号获取。"""
+
+    username: str = Field(..., min_length=1, max_length=254, description="用户名或邮箱")
+    password: str = Field(..., min_length=1, max_length=72, description="密码")
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("用户名或邮箱不能为空")
+        return value
 
 
 class TokenResponse(BaseModel):
@@ -37,55 +38,59 @@ class TokenResponse(BaseModel):
     expires_in:   int                 # 有效期（秒）
     role:         str                 # 用户角色
     user_id:      str                 # 用户ID
+    tenant_id:    str                 # 账号所属公司范围，沿用现有字段名
 
-
-def _create_access_token(data: dict, expires_minutes: int) -> str:
-    """把身份信息 + 过期时间打包，用密钥签名成 JWT 字符串。"""
-    settings = get_settings()
-    payload = data.copy()                                            # 拷一份，避免改到原字典
-    expire = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
-    payload["exp"] = expire                                          # exp 是 JWT 标准的过期字段
-    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
-    req: LoginRequest,                            # 请求体自动解析为 LoginRequest
-    db: AsyncSession = Depends(get_db),           # 注入数据库会话
-    ):
+    req: LoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> TokenResponse:
     """用户登录，返回 JWT Access Token（支持用户名或邮箱登录）。"""
-
     settings = get_settings()
+    invalid_credentials = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="用户名或密码错误",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
-    # 查用户：用户名或邮箱都行（:val 同时匹配两列），参数化查询防注入（回顾 2.6）
+    # 当前登录入口不要求用户选择公司，因此必须唯一定位账号。
+    # 同名账号或用户名与他人邮箱冲突时拒绝登录，不能随机选择第一条记录。
     result = await db.execute(
         text(
             "SELECT id, password_hash, role, tenant_id, is_active "
-            "FROM users WHERE username = :val OR email = :val LIMIT 1"
+            "FROM users WHERE username = :val OR email = :val LIMIT 2"
         ),
         {"val": req.username},
     )
-    row = result.fetchone()
+    rows = result.fetchall()
+    if len(rows) != 1:
+        raise invalid_credentials
+    row = rows[0]
 
-    if not row:                                   # 用户不存在
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
-
-    if not row.is_active:                         # 账号被禁用
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用，请联系管理员")
-
-    # 密码校验是 CPU 密集型（~100ms），用线程池避免阻塞事件循环（回顾 2.1.4）
-    loop = asyncio.get_running_loop()
-
-    password_ok = await loop.run_in_executor(
-        None, pwd_context.verify, req.password, row.password_hash
-    )
-
-    # 密码不对
+    # 密码验证放在线程池运行，避免阻塞其他请求；密码本身不做去空格处理。
+    password_ok = await asyncio.to_thread(verify_password, req.password, row.password_hash)
     if not password_ok:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
+        raise invalid_credentials
 
-    # 校验通过，签发 Token（把用户身份装进去）
-    token = _create_access_token(
-        data={"sub": str(row.id), "role": row.role, "tenant_id": row.tenant_id},
+    # 先验证密码，再返回账号状态，避免仅凭用户名获知账号是否停用。
+    if not row.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="账号已被禁用，请联系管理员",
+        )
+    if row.role not in {"hr", "admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="当前账号无权访问 HR 系统",
+        )
+    if not isinstance(row.tenant_id, str) or not row.tenant_id.strip():
+        raise invalid_credentials
+
+    token = create_access_token(
+        user_id=str(row.id),
+        tenant_id=row.tenant_id,
+        role=row.role,
         expires_minutes=settings.jwt_access_token_expire_minutes,
     )
 
@@ -96,10 +101,14 @@ async def login(
         expires_in=settings.jwt_access_token_expire_minutes * 60,   # 分钟转秒
         role=row.role,
         user_id=str(row.id),
+        tenant_id=row.tenant_id,
     )
 
+
 if __name__ == '__main__':
+    import uvicorn
     from fastapi import FastAPI
+
     app = FastAPI()
     app.include_router(router)
     uvicorn.run(app, host="0.0.0.0", port=8000)
