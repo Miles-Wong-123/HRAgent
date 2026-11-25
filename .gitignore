@@ -28,3 +28,6 @@ backups/
 models/
 uploads/
 tmp/
+
+# 本地的文档
+docs/
