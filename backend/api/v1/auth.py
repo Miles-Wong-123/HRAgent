@@ -58,8 +58,11 @@ async def login(
     # 同名账号或用户名与他人邮箱冲突时拒绝登录，不能随机选择第一条记录。
     result = await db.execute(
         text(
-            "SELECT id, password_hash, role, tenant_id, is_active "
-            "FROM users WHERE username = :val OR email = :val LIMIT 2"
+            "SELECT u.id, u.password_hash, u.role, u.tenant_id, u.is_active, "
+            "c.is_active AS company_is_active "
+            "FROM public.users AS u "
+            "LEFT JOIN public.companies AS c ON c.id = u.tenant_id "
+            "WHERE u.username = :val OR u.email = :val LIMIT 2"
         ),
         {"val": req.username},
     )
@@ -78,6 +81,11 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账号已被禁用，请联系管理员",
+        )
+    if not row.company_is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="所属公司不存在或已停用，请联系管理员",
         )
     if row.role not in {"hr", "admin"}:
         raise HTTPException(

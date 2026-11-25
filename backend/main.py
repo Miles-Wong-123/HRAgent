@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 
 from backend.api.v1.auth import router as auth_router
+from backend.api.v1.companies import router as companies_router
 from backend.config import get_settings
 from backend.core.logger import configure_logging
 from backend.dependencies import CurrentUser, engine, get_current_user
@@ -21,11 +22,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="HRAgent API",
-    description="HR 系统接口；当前提供登录和当前用户查询。",
+    description="HR 系统接口：登录、当前用户查询及本公司资料管理。",
     version="0.1.0",
     lifespan=lifespan,
 )
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["认证"])
+app.include_router(companies_router, prefix="/api/v1/companies", tags=["公司管理"])
 
 
 @app.get("/health", tags=["健康检查"])

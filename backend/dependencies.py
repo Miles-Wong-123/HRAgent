@@ -79,8 +79,11 @@ async def get_current_user(
 
     result = await db.execute(
         text(
-            "SELECT id, role, tenant_id, is_active FROM users "
-            "WHERE id = :user_id AND tenant_id = :tenant_id"
+            "SELECT u.id, u.role, u.tenant_id, u.is_active, "
+            "c.is_active AS company_is_active "
+            "FROM public.users AS u "
+            "LEFT JOIN public.companies AS c ON c.id = u.tenant_id "
+            "WHERE u.id = :user_id AND u.tenant_id = :tenant_id"
         ),
         {"user_id": user_id, "tenant_id": payload["tenant_id"]},
     )
@@ -92,6 +95,11 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账号已被禁用，请联系管理员",
+        )
+    if not row.company_is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="所属公司不存在或已停用，请联系管理员",
         )
     if row.role not in {"hr", "admin"}:
         raise HTTPException(
