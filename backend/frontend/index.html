@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HRAgent · 工作台</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="./"><span class="brand-icon">H</span> HRAgent <span class="beta">LOCAL</span></a>
+    <div class="sidebar-label">工作空间</div>
+    <nav aria-label="主导航">
+      <button class="nav active" data-tab="company"><span>▦</span> 公司资料</button>
+      <button class="nav" data-tab="departments"><span>☷</span> 部门管理</button>
+      <button class="nav" data-tab="requests"><span>↔</span> 请求记录 <span id="request-count" class="count">0</span></button>
+    </nav>
+    <div class="sidebar-foot"><span class="dot"></span> 本地开发环境<br><small>从组织管理开始，连接招聘流程。</small></div>
+  </aside>
+  <main>
+    <header class="topbar"><span>工作空间 <span class="slash">/</span> <span id="breadcrumb">公司资料</span></span><a href="/docs" target="_blank" rel="noopener">接口文档 ↗</a></header>
+    <div class="content">
+      <div class="page-heading"><div><p class="eyebrow">ORGANIZATION WORKSPACE</p><h1 id="page-title">公司资料</h1><p id="page-subtitle">查看和维护当前账号所属公司的基本信息。</p></div><div class="connection"><span id="health-dot" class="dot muted"></span><span id="health-text">检查服务中</span><button id="check-health" class="icon-button" aria-label="重新检查服务">↻</button></div></div>
+      <section class="session card" aria-label="登录账号">
+        <div class="session-info"><span class="avatar" id="avatar">U</span><div><strong id="identity">尚未登录</strong><p id="identity-detail">登录后查看本公司的资料与部门</p></div></div>
+        <div class="session-actions"><span id="role-badge" class="badge hidden"></span><button id="login-button" class="button primary">登录账号</button><button id="logout-button" class="button hidden">退出登录</button></div>
+      </section>
+      <div id="notice" role="status" aria-live="polite" class="notice hidden"></div>
+      <section id="company-panel" class="panel">
+        <div class="card section-card"><div class="section-heading"><div><h2>基本信息</h2><p>公司范围由登录账号确定，无需手动选择。</p></div><button id="reload-company" class="button" data-auth>刷新资料</button></div>
+          <div id="company-empty" class="empty"><span class="empty-icon">▦</span><h3>先登录，再开始</h3><p>公司资料将从当前账号所属公司读取。</p><button class="button primary" data-open-login>登录账号</button></div>
+          <form id="company-form" class="hidden"><div class="form-grid"><label>公司名称 <span>*</span><input name="name" required maxlength="200" placeholder="输入公司名称"></label><label>公司简称<input name="short_name" maxlength="100" placeholder="输入公司简称"></label><label class="full">公司地址<input name="address" maxlength="500" placeholder="输入公司地址"></label><label class="full">公司介绍<textarea name="description" rows="4" maxlength="10000" placeholder="简单介绍公司业务"></textarea></label></div><div class="form-footer"><small id="company-permission">仅管理员可以修改公司资料</small><button id="save-company" class="button primary" type="submit">保存修改</button></div></form>
+        </div>
+        <div class="info-strip"><span>ⓘ</span><p>当前页面验证公司资料接口。岗位、JD 与简历筛选将在后续接入。</p></div>
+      </section>
+      <section id="departments-panel" class="panel hidden"><div class="card section-card"><div class="section-heading"><div><h2>部门列表 <span id="department-count" class="count">—</span></h2><p>维护组织中的部门，停用后仍保留历史资料。</p></div><button id="add-department" class="button primary" data-auth>＋ 新增部门</button></div><div class="toolbar"><label class="filter-label">部门状态<select id="department-filter"><option value="">全部状态</option><option value="true">启用中</option><option value="false">已停用</option></select></label><button id="reload-departments" class="button" data-auth>刷新列表</button></div><div class="table-wrap"><table><thead><tr><th>部门名称</th><th>说明</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="department-rows"></tbody></table></div><div id="department-empty" class="empty"><span class="empty-icon">☷</span><h3>登录后查看部门</h3><p>这里会显示当前公司的真实部门数据。</p></div><div class="pagination"><button id="previous-page" class="button">上一页</button><span id="page-label">第 1 页</span><button id="next-page" class="button">下一页</button></div></div></section>
+      <section id="requests-panel" class="panel hidden"><div class="card section-card"><div class="section-heading"><div><h2>请求记录</h2><p>仅保留本次页面访问的接口状态，不记录密码或 Token。</p></div><button id="clear-requests" class="button">清空记录</button></div><div class="endpoint-info">当前服务 <code id="server-address"></code></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>请求</th><th>结果</th><th>耗时</th><th>说明</th></tr></thead><tbody id="request-rows"></tbody></table></div><div id="request-empty" class="empty"><p>暂无请求记录</p></div></div></section>
+      <footer>HRAgent <span>·</span> 组织管理预览 <span>·</span> 数据来自当前后端服务</footer>
+    </div>
+  </main>
+  <dialog id="login-dialog"><form id="login-form"><div class="dialog-heading"><div><p class="eyebrow">WELCOME BACK</p><h2>登录工作空间</h2></div><button type="button" class="icon-button" data-close="login-dialog" aria-label="关闭">×</button></div><p class="dialog-description">使用你的 HR 或管理员账号继续。</p><label>用户名或邮箱<input name="username" autocomplete="username" maxlength="254" required placeholder="例如 hr_test"></label><label>密码<input name="password" type="password" autocomplete="current-password" maxlength="72" required placeholder="输入密码"></label><p id="login-error" class="form-error" role="alert"></p><div class="dialog-footer"><button type="button" class="button" data-close="login-dialog">取消</button><button type="submit" class="button primary">登录</button></div></form></dialog>
+  <dialog id="department-dialog"><form id="department-form"><div class="dialog-heading"><h2 id="department-dialog-title">新增部门</h2><button type="button" class="icon-button" data-close="department-dialog" aria-label="关闭">×</button></div><label>部门名称 <span>*</span><input name="name" required maxlength="100" placeholder="例如 产品部"></label><label>部门说明<textarea name="description" rows="4" maxlength="2000" placeholder="描述部门的主要职责"></textarea></label><p id="department-error" class="form-error" role="alert"></p><div class="dialog-footer"><button type="button" class="button" data-close="department-dialog">取消</button><button type="submit" class="button primary">保存部门</button></div></form></dialog>
+</body>
+</html>
