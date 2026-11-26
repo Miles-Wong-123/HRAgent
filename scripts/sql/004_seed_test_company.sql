@@ -4,7 +4,7 @@
 BEGIN;
 
 INSERT INTO public.companies (id, name, short_name, description)
-VALUES ('company_demo', 'HR 系统测试公司', '测试公司', '仅用于本地开发和接口验证')
+VALUES ('company_demo', '深圳兆珑科技有限公司', '兆珑科技', NULL)
 ON CONFLICT (id) DO NOTHING;
 
 ALTER TABLE public.users VALIDATE CONSTRAINT users_company_fk;
