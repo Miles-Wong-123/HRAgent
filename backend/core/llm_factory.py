@@ -28,6 +28,7 @@ _HTTP_SYNC_CLIENT = httpx.Client(                             # 同步客户端�
 # Agent 类型 → 模型标识符 的路由表
 _AGENT_MODEL_ROUTING: dict[str, str] = {
     "resume":           "deepseek-chat",   # 简历审查
+    "jd_parser":        "deepseek-chat",   # JD 结构化解析
 }
 
 # 模型标识符（实际模型） → DeepSeek API 实际接受的 model 名称

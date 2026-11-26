@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # 环境变量覆盖列表时使用 JSON，如 ALLOWED_JD_EXTENSIONS='[".pdf", ".txt"]'。
     # JD 支持格式是后续上传接口的配置约定，具体解析功能仍需实现。
     allowed_resume_extensions: list[str] = Field(default_factory=lambda: [".pdf"])
-    allowed_jd_extensions: list[str] = Field(default_factory=lambda: [".pdf", ".docx", ".txt"])
+    allowed_jd_extensions: list[str] = Field(default_factory=lambda: [".pdf", ".docx", ".txt", ".md"])
 
     @field_validator("upload_dir")
     @classmethod
