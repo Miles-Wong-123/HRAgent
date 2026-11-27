@@ -5,11 +5,12 @@ export class ApiError extends Error {
 export async function api(path, { token, method = 'GET', body, signal } = {}) {
   const headers = { Accept: 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const multipart = body instanceof FormData;
+  if (body !== undefined && !multipart) headers['Content-Type'] = 'application/json';
   let response;
   try {
     response = await fetch(`/api/v1${path}`, {
-      method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+      method, headers, body: multipart ? body : JSON.stringify(body),
       signal: signal ?? AbortSignal.timeout(20000),
     });
   } catch (error) {
@@ -22,7 +23,7 @@ export async function api(path, { token, method = 'GET', body, signal } = {}) {
     const message = Array.isArray(detail)
       ? detail.map(item => `${item.loc?.slice(1).join('.') || '参数'}：${item.msg}`).join('；')
       : typeof detail === 'string' ? detail : response.status >= 500
-        ? '服务暂时不可用。请确认岗位建表脚本已执行，并查看后端终端。' : '请求未成功，请稍后重试。';
+        ? '服务暂时不可用。请稍后重试或查看后端日志。' : '请求未成功，请稍后重试。';
     throw new ApiError(response.status, message);
   }
   return data;

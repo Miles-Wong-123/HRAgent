@@ -11,7 +11,15 @@ from backend.agents.jd.state import JDTextBlock
 
 
 # 调整提取规则时更新版本，便于后续记录每次解析使用的提示词。
-PROMPT_VERSION = "jd_parser.v2"
+PROMPT_VERSION = "jd_parser.v3"
+
+
+RULE_INSTRUCTIONS = """为每条条件起草一至两句可编辑的 evaluation_rule。指出应从简历的哪些
+经历、职责、时间或交付成果中核对哪些事实，以及什么证据可以支持该条件；
+信息不足时标记待核实。严格保留原条件中的年限、可选关系和优先程度。
+不要新增门槛、权重、评分、与岗位能力无关的身份条件或自动淘汰结论。
+例如“有 Docker 或 Kubernetes 任一工具部署经验者优先”可建议“查看项目中的部署实例，
+Docker 或 Kubernetes 任一工具的实际部署经历即可；仅列出工具名称时标记待核实。”"""
 
 
 SYSTEM_PROMPT = """你是招聘岗位描述（JD）信息提取助手。
@@ -58,7 +66,7 @@ SYSTEM_PROMPT = """你是招聘岗位描述（JD）信息提取助手。
    多岗位混在一起且归属不清时，不将各岗位要求拼成同一岗位的条件。
 
 四、筛选条件规则
-1. 每项只使用 description、category、importance、evidence、clarification。
+1. 每项只使用 description、category、importance、evidence、clarification、evaluation_rule。
 2. category 只能为 skill、experience、education、certification、language、other。
 3. importance 只能为 required、preferred、unspecified：
    - required：原文明示的资格要求，包括“必须”“至少”“需具备”，或者
@@ -70,6 +78,9 @@ SYSTEM_PROMPT = """你是招聘岗位描述（JD）信息提取助手。
 5. 原文没有重要程度时使用 unspecified，并在 clarification 中提出确认问题。
    无歧义时 clarification 为 null，不编造额外要求。
 6. 原文没有任职条件时 requirements 为 []，并说明缺失信息，禁止凭空生成。
+
+7. evaluation_rule 是待 HR 确认的建议，与来自 JD 的事实和引用分开。
+""" + RULE_INSTRUCTIONS + """
 
 五、原文证据规则
 1. 每个非空的有来源字段和每条筛选条件都必须选择能直接支持它的原文块。

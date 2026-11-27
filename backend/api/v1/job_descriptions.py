@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Response, UploadFile, status
@@ -10,11 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agents.jd.nodes import MAX_TEXT_CHARACTERS
-from backend.agents.jd.state import JDReviewDecision, JDParseError, JDParseStatus, JDStructured, JDTextBlock, JDValidationIssue, JDEvidence, RequirementCategory, RequirementImportance
+from backend.agents.jd.state import JDRuleInput, JDRuleSuggestions, JDReviewDecision, JDParseError, JDParseStatus, JDStructured, JDTextBlock, JDValidationIssue, JDEvidence, RequirementCategory, RequirementImportance
 from backend.core.permissions import require_hr
 from backend.dependencies import CurrentUser, get_db
 from backend.services.job_description_service import (
-    create_jd, get_jd, list_jds, prepare_jd_parse, run_jd_review, run_jd_parse_task, save_upload,
+    create_jd, get_jd, list_jds, prepare_jd_parse, run_jd_review, run_jd_parse_task, save_upload, suggest_missing_rules,
 )
 
 router = APIRouter()
@@ -69,6 +69,10 @@ class JDRequirementResponse(BaseModel):
 
 
 class JDDetail(JDSummary):
+    suggested_weights: dict[Literal["required", "preferred"], int] = Field(
+        default_factory=lambda: {"required": 2, "preferred": 1},
+        description="按重要性给出的审核建议；每条条件的最终权重由 HR 在发布时确认。",
+    )
     published_by: UUID | None
     published_at: datetime | None
     source_text: str | None
@@ -192,3 +196,14 @@ async def review_and_publish(
     await db.rollback()
     await run_jd_review(user["tenant_id"], jd_id, decision, reviewer=UUID(user["user_id"]))
     return await get_jd(db, user["tenant_id"], jd_id)
+
+
+@router.post("/{jd_id}/rule-suggestions", response_model=JDRuleSuggestions, summary="为草稿条件生成评估建议")
+async def draft_evaluation_rules(
+    jd_id: UUID,
+    items: Annotated[list[JDRuleInput], Field(min_length=1)],
+    user: CurrentUser = Depends(require_hr),
+    db: AsyncSession = Depends(get_db),
+):
+    """按输入顺序编号（从 0 开始）。建议返回审核表单，由 HR 确认发布时保存。"""
+    return await suggest_missing_rules(db, user["tenant_id"], jd_id, items)

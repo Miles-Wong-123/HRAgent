@@ -85,6 +85,9 @@ class JDRequirement(JDBaseModel, Generic[EvidenceT]):
     evidence:       list[EvidenceT]       = Field(min_length=1, description="条件及其重要程度的原文依据")
     clarification:  str | None            = Field(default=None, min_length=1, description="条件存在歧义时记录需要 HR 确认的问题，否则 null")
 
+    # 历史解析结果没有此字段；新解析使用下方更严格的输出结构。
+    evaluation_rule: str | None = Field(default=None, min_length=1)
+
     # 不让模型生成正式条件 ID 或评分权重，留给业务层与 HR 确认流程。
 
 
@@ -104,8 +107,14 @@ class JDFields(JDBaseModel, Generic[EvidenceT]):
     clarification_questions:  list[str]            = Field(default_factory=list, description="歧义、矛盾或岗位名称不一致等需确认的问题")
 
 
+class JDExtractedRequirement(JDRequirement[str]):
+    evaluation_rule: str = Field(min_length=1, description="建议 HR 从简历核对的具体证据，信息不足时标记待核实")
+
+
 class JDExtraction(JDFields[str]):
-    """模型侧输出：evidence 只包含原文块编号。"""
+    """模型侧输出：每条条件包含原文块编号和待 HR 确认的评估建议。"""
+
+    requirements: list[JDExtractedRequirement] = Field(default_factory=list)
 
 
 class JDStructured(JDFields[JDEvidence]):
@@ -196,3 +205,20 @@ class JDReviewState(TypedDict):
     jd_id:     str
     decision:  NotRequired[dict]
     published: NotRequired[bool]
+
+
+class JDRuleInput(JDBaseModel):
+    """审核表单中尚缺评估规则的条件，包括 HR 新增的条件。"""
+
+    description: str = Field(min_length=1)
+    category: RequirementCategory
+    importance: RequirementImportance
+
+
+class JDRuleSuggestion(JDBaseModel):
+    index: int = Field(ge=0, description="输入条件的 index")
+    evaluation_rule: str = Field(min_length=1)
+
+
+class JDRuleSuggestions(JDBaseModel):
+    suggestions: list[JDRuleSuggestion]
