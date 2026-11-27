@@ -18,7 +18,7 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 终端二：
 
 ```bash
-cd backend/frontend
+cd frontend
 npm install
 npm run dev
 ```

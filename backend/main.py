@@ -34,7 +34,7 @@ app.include_router(auth_router, prefix="/api/v1/auth", tags=["认证"])
 app.include_router(companies_router, prefix="/api/v1/companies", tags=["公司管理"])
 app.include_router(departments_router, prefix="/api/v1/departments", tags=["部门管理"])
 app.include_router(positions_router, prefix="/api/v1/positions", tags=["岗位管理"])
-frontend_dist = PROJECT_ROOT / "backend" / "frontend" / "dist"
+frontend_dist = PROJECT_ROOT / "frontend" / "dist"
 if frontend_dist.is_dir():
     app.mount("/ui", StaticFiles(directory=frontend_dist, html=True), name="frontend")
 

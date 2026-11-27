@@ -31,7 +31,7 @@ tmp/
 
 # 前端依赖与构建输出
 node_modules/
-backend/frontend/dist/
+/frontend/dist/
 
 # 本地的文档
 docs/
