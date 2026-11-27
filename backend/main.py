@@ -10,6 +10,7 @@ from backend.api.v1.auth import router as auth_router
 from backend.api.v1.companies import router as companies_router
 from backend.api.v1.departments import router as departments_router
 from backend.api.v1.positions import router as positions_router
+from backend.api.v1.job_descriptions import router as job_descriptions_router
 from backend.config import PROJECT_ROOT, get_settings
 from backend.core.logger import configure_logging
 from backend.dependencies import CurrentUser, engine, get_current_user
@@ -26,7 +27,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="HRAgent API",
-    description="HR 系统接口：登录、公司、部门与岗位管理。",
+    description="HR 系统接口：登录、公司、部门、岗位管理及 JD 解析。",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -34,6 +35,7 @@ app.include_router(auth_router, prefix="/api/v1/auth", tags=["认证"])
 app.include_router(companies_router, prefix="/api/v1/companies", tags=["公司管理"])
 app.include_router(departments_router, prefix="/api/v1/departments", tags=["部门管理"])
 app.include_router(positions_router, prefix="/api/v1/positions", tags=["岗位管理"])
+app.include_router(job_descriptions_router, prefix="/api/v1/job-descriptions", tags=["JD 解析"])
 frontend_dist = PROJECT_ROOT / "frontend" / "dist"
 if frontend_dist.is_dir():
     app.mount("/ui", StaticFiles(directory=frontend_dist, html=True), name="frontend")

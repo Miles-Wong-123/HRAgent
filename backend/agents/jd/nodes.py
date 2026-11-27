@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import re
 import zipfile
 from pathlib import Path
 
@@ -12,9 +13,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 from pydantic import ValidationError
 
-from backend.agents.jd_parser.prompts import PROMPT_VERSION, SYSTEM_PROMPT, build_extract_prompt
-from backend.agents.jd_parser.state import (
-    JDFileSource, JDParseError, JDParseInput, JDParseState, JDStructured,
+from backend.agents.jd.prompts import PROMPT_VERSION, SYSTEM_PROMPT, build_extract_prompt
+from backend.agents.jd.state import (
+    JDExtraction, JDFileSource, JDParseError, JDParseInput, JDParseState, JDStructured,
     JDTextBlock, JDTextSource, JDValidationIssue,
 )
 from backend.config import get_settings
@@ -60,15 +61,17 @@ def _input(state: JDParseState) -> JDParseInput:
 
 
 def _blocks(parts: list[tuple[str, int | None]]) -> list[JDTextBlock]:
-    """长段落按字符切成可引用块，保留全部正文和原页码。"""
+    """按原文句末、换行及列表标题划块，让模型能分别选择标题和每条条件。"""
     blocks = []
+    boundaries = r"(?<=[。！？；])|[\r\n]+|(?<=(?:必备条件|优先条件|任职要求|岗位职责)[：:])"
     for text, page in parts:
-        for start in range(0, len(text), BLOCK_CHARACTERS):
-            content = text[start:start + BLOCK_CHARACTERS].strip()
-            if content:
-                blocks.append(JDTextBlock(
-                    block_id=f"b{len(blocks) + 1:04d}", text=content, page_number=page
-                ))
+        for sentence in re.split(boundaries, text):
+            for start in range(0, len(sentence), BLOCK_CHARACTERS):
+                content = sentence[start:start + BLOCK_CHARACTERS].strip()
+                if content:
+                    blocks.append(JDTextBlock(
+                        block_id=f"b{len(blocks) + 1:04d}", text=content, page_number=page
+                    ))
     return blocks
 
 
@@ -228,6 +231,32 @@ async def extract_text_node(state: JDParseState) -> dict:
         return _failure("file_parse_failed", "无法读取文件，请确认文件完整且格式正确。", **reset)
 
 
+def _resolve_evidence(extraction: JDExtraction, blocks: list[JDTextBlock]) -> tuple[JDStructured | None, list[JDValidationIssue]]:
+    """仅从本次读取的原文取证；无效编号带字段路径返回，阻止保存草稿。"""
+    source = {block.block_id: block.text for block in blocks}
+    data = extraction.model_dump()
+    issues = []
+    for field, value in data.items():
+        items = value if isinstance(value, list) else [value]
+        for index, item in enumerate(items):
+            if not isinstance(item, dict) or "evidence" not in item:
+                continue
+            path = f"{field}.{index}" if isinstance(value, list) else field
+            citations = []
+            for number, block_id in enumerate(item["evidence"]):
+                if block_id not in source:
+                    issues.append(JDValidationIssue(
+                        code="missing_block", field_path=f"{path}.evidence.{number}",
+                        message=f"引用编号 {block_id[:80]} 不在本次 JD 的原文块中。",
+                    ))
+                else:
+                    citations.append({"block_id": block_id, "quote": source[block_id]})
+            item["evidence"] = citations
+    if issues:
+        return None, issues
+    return JDStructured.model_validate(data), []
+
+
 async def extract_structured_node(state: JDParseState) -> dict:
     """调用公共模型工厂提取 JD，最多重试一次临时网络或服务错误。"""
     if state.get("status") in TERMINAL_STATUSES:
@@ -251,14 +280,18 @@ async def extract_structured_node(state: JDParseState) -> dict:
         try:
             model = get_llm("jd_parser")
             metadata["model_name"] = getattr(model, "model_name", None) or getattr(model, "model", None)
-            structured_model = get_structured_llm("jd_parser", JDStructured)
+            structured_model = get_structured_llm("jd_parser", JDExtraction)
             result = await asyncio.wait_for(structured_model.ainvoke([
                 SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt),
             ]), timeout=MODEL_TIMEOUT_SECONDS)
             if result is None:
                 return _failure("empty_model_output", "模型未返回结构化内容，请重新解析。", retryable=True, **metadata)
-            data = result.model_dump() if isinstance(result, JDStructured) else result
-            structured = JDStructured.model_validate(data)
+            extraction = JDExtraction.model_validate(result)
+            structured, issues = _resolve_evidence(extraction, blocks)
+            if issues:
+                metadata["validation_issues"] = issues
+                return _failure("evidence_validation_failed", "模型引用了不存在的原文块，请查看 validation_issues。",
+                                retryable=True, **metadata)
             return {**metadata, "structured": structured, "status": "validating"}
         except (TimeoutError, APIConnectionError, APITimeoutError, APIStatusError) as exc:
             temporary = not isinstance(exc, APIStatusError) or exc.status_code in {408, 409, 429} or exc.status_code >= 500

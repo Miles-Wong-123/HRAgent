@@ -4,11 +4,12 @@
 解析完成只代表生成了待确认草稿，不代表 HR 已确认或 JD 已发布。
 """
 
-from typing import Annotated, Literal
+from decimal import Decimal
+from typing import Annotated, Generic, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
-from typing_extensions import NotRequired, TypedDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing_extensions import NotRequired, TypedDict, TypeVar
 
 
 class JDBaseModel(BaseModel):
@@ -53,17 +54,20 @@ class JDTextBlock(JDBaseModel):
 
 
 class JDEvidence(JDBaseModel):
-    """模型引用原文块，后续校验节点检查块是否存在、引用是否与原文匹配。"""
+    """业务侧原文证据。后端根据模型选择的块编号回填原文。"""
 
     block_id:  str = Field(min_length=1, description="来自输入原文块的 block_id，不得虚构")
     quote:     str = Field(min_length=1, description="直接引用原文，不能改写")
 
 
-class JDSourcedText(JDBaseModel):
+EvidenceT = TypeVar("EvidenceT", default=JDEvidence)
+
+
+class JDSourcedText(JDBaseModel, Generic[EvidenceT]):
     """一项有原文支持的内容；无法提取时上层字段用 null 或空列表。"""
 
     value:     str              = Field(min_length=1, description="依据原文提取的内容，不补充推测")
-    evidence:  list[JDEvidence] = Field(min_length=1, description="支持该内容的原文引用")
+    evidence:  list[EvidenceT]  = Field(min_length=1, description="支持该内容的原文引用")
 
 
 RequirementCategory = Literal[
@@ -72,32 +76,40 @@ RequirementCategory = Literal[
 RequirementImportance = Literal["required", "preferred", "unspecified"]
 
 
-class JDRequirement(JDBaseModel):
+class JDRequirement(JDBaseModel, Generic[EvidenceT]):
     """单条候选人要求，尽量拆分为可独立评估的条件。"""
 
     description:    str                   = Field(min_length=1, description="条件描述；保留原文中的范围、程度和限定词")
     category:       RequirementCategory
     importance:     RequirementImportance = Field(description="明确必备为 required；优先或加分为 preferred；无法确定为 unspecified，交由 HR 确认")
-    evidence:       list[JDEvidence]      = Field(min_length=1, description="条件及其重要程度的原文依据")
+    evidence:       list[EvidenceT]       = Field(min_length=1, description="条件及其重要程度的原文依据")
     clarification:  str | None            = Field(default=None, min_length=1, description="条件存在歧义时记录需要 HR 确认的问题，否则 null")
 
     # 不让模型生成正式条件 ID 或评分权重，留给业务层与 HR 确认流程。
 
 
-class JDStructured(JDBaseModel):
+class JDFields(JDBaseModel, Generic[EvidenceT]):
     """大模型结构化提取目标；所有内容均为待 HR 确认的草稿。"""
 
-    source_position_title:    JDSourcedText | None = Field(default=None, description="原文岗位名称；不覆盖 HR 已选择的岗位")
-    summary:                  JDSourcedText | None = Field(default=None, description="有原文支持的岗位概述")
-    responsibilities:         list[JDSourcedText]  = Field(default_factory=list, description="工作职责")
-    location:                 JDSourcedText | None = Field(default=None, description="原文工作地点")
-    employment_type:          JDSourcedText | None = Field(default=None, description="原文用工类型，例如全职、实习")
-    salary:                   JDSourcedText | None = Field(default=None, description="保留薪资原文及币种、周期等限定，不推测或自动换算")
-    experience:               JDSourcedText | None = Field(default=None, description="原文经验要求，细项同时归入 requirements")
-    education:                JDSourcedText | None = Field(default=None, description="原文学历要求，细项同时归入 requirements")
-    requirements:             list[JDRequirement]  = Field(default_factory=list)
+    source_position_title:    JDSourcedText[EvidenceT] | None = Field(default=None, description="原文岗位名称；不覆盖 HR 已选择的岗位")
+    summary:                  JDSourcedText[EvidenceT] | None = Field(default=None, description="有原文支持的岗位概述")
+    responsibilities:         list[JDSourcedText[EvidenceT]]  = Field(default_factory=list, description="工作职责")
+    location:                 JDSourcedText[EvidenceT] | None = Field(default=None, description="原文工作地点")
+    employment_type:          JDSourcedText[EvidenceT] | None = Field(default=None, description="原文用工类型，例如全职、实习")
+    salary:                   JDSourcedText[EvidenceT] | None = Field(default=None, description="保留薪资原文及币种、周期等限定，不推测或自动换算")
+    experience:               JDSourcedText[EvidenceT] | None = Field(default=None, description="原文经验要求，细项同时归入 requirements")
+    education:                JDSourcedText[EvidenceT] | None = Field(default=None, description="原文学历要求，细项同时归入 requirements")
+    requirements:             list[JDRequirement[EvidenceT]]  = Field(default_factory=list)
     missing_information:      list[str]            = Field(default_factory=list, description="原文未提供且需要 HR 补充的信息")
     clarification_questions:  list[str]            = Field(default_factory=list, description="歧义、矛盾或岗位名称不一致等需确认的问题")
+
+
+class JDExtraction(JDFields[str]):
+    """模型侧输出：evidence 只包含原文块编号。"""
+
+
+class JDStructured(JDFields[JDEvidence]):
+    """接口及数据库结构：每个编号都已展开为 block_id 和原文 quote。"""
 
 
 JDParseStatus = Literal[
@@ -140,3 +152,47 @@ class JDParseState(TypedDict):
     error:                    NotRequired[JDParseError | None]
     model_name:               NotRequired[str | None]
     prompt_version:           NotRequired[str | None]
+
+
+class JDPositionEdits(JDBaseModel):
+    """只提交 HR 要修改的字段。省略沿用草稿，显式 null 清空单值。"""
+
+    source_position_title: str | None = Field(default=None, min_length=1)
+    summary:               str | None = Field(default=None, min_length=1)
+    location:              str | None = Field(default=None, min_length=1)
+    employment_type:       str | None = Field(default=None, min_length=1)
+    salary:                str | None = Field(default=None, min_length=1)
+    experience:            str | None = Field(default=None, min_length=1)
+    education:             str | None = Field(default=None, min_length=1)
+    responsibilities:      list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
+
+
+class JDRequirementDecision(JDBaseModel):
+    """省略 ID 表示手动新增，此时必填描述和类别。"""
+
+    requirement_id:  UUID | None = None
+    importance:      Literal["required", "preferred"]
+    evaluation_rule: str = Field(min_length=1)
+    weight:          Decimal = Field(gt=0, le=10000, decimal_places=2)
+    description:     str | None = Field(default=None, min_length=1)
+    category:        RequirementCategory | None = None
+
+    @model_validator(mode="after")
+    def validate_new_requirement(self):
+        if self.requirement_id is None and (self.description is None or self.category is None):
+            raise ValueError("手动新增条件必须填写 description 和 category")
+        return self
+
+
+class JDReviewDecision(JDBaseModel):
+    """提交即确认发布。审核人由接口鉴权后提供。"""
+
+    position_edits: JDPositionEdits = Field(default_factory=JDPositionEdits)
+    requirements:   list[JDRequirementDecision] = Field(min_length=1)
+    remove_requirement_ids: list[UUID] = Field(default_factory=list, description="明确删除的现有条件 ID")
+
+
+class JDReviewState(TypedDict):
+    jd_id:     str
+    decision:  NotRequired[dict]
+    published: NotRequired[bool]

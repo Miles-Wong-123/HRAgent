@@ -1,20 +1,23 @@
-"""JD 解析流程：完整读取原文 → 模型提取 → 引用校验 → 返回草稿。
+"""JD 模块的两张图：解析生成草稿，人工审核后发布。
 
 失败、超限或需要 OCR 时直接结束，不继续调用后续节点。
-此图不保存数据库、不发布 JD，也不负责 HTTP 请求的身份认证。
+解析图返回校验过的草稿；审核图通过业务层提供的回调发布确认后的版本。
 """
 
+from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from typing import Literal
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.types import interrupt
 from langgraph.graph import END, START, StateGraph
 
-from backend.agents.jd_parser.nodes import (
+from backend.agents.jd.nodes import (
     extract_structured_node,
     extract_text_node,
     validate_result_node,
 )
-from backend.agents.jd_parser.state import JDParseInput, JDParseState
+from backend.agents.jd.state import JDParseInput, JDParseState, JDReviewDecision, JDReviewState
 
 
 def _after_extract_text(state: JDParseState) -> Literal["analyze", "end"]:
@@ -60,6 +63,29 @@ def build_jd_parser_graph():
     return builder.compile()
 
 
+def build_jd_review_graph(
+    checkpointer: BaseCheckpointSaver,
+    publish: Callable[[JDReviewDecision], Awaitable[None]],
+):
+    """解析草稿落库后进入审核。新旧草稿共用同一暂停、恢复及发布流程。"""
+
+    def hr_review(state: JDReviewState) -> dict:
+        decision = interrupt({"jd_id": state["jd_id"], "action": "review_and_publish"})
+        return {"decision": decision}
+
+    async def publish_review(state: JDReviewState) -> dict:
+        await publish(JDReviewDecision.model_validate(state["decision"]))
+        return {"published": True}
+
+    builder = StateGraph(JDReviewState)
+    builder.add_node("hr_review", hr_review)
+    builder.add_node("publish_review", publish_review)
+    builder.add_edge(START, "hr_review")
+    builder.add_edge("hr_review", "publish_review")
+    builder.add_edge("publish_review", END)
+    return builder.compile(checkpointer=checkpointer)
+
+
 async def run_jd_parser(
     request: JDParseInput | dict,
     *,
@@ -84,7 +110,7 @@ async def run_jd_parser(
 
 
 if __name__ == "__main__":
-    # 在项目根目录执行：python -m backend.agents.jd_parser.graph
+    # 在项目根目录执行：python -m backend.agents.jd.graph
     # 此入口会调用 .env.local 配置的大模型，只解析下方虚构 JD，不操作数据库。
     import asyncio
     import json
