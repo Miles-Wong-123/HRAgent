@@ -5,7 +5,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -77,11 +77,10 @@ class Settings(BaseSettings):
         return self.upload_max_size_mb * 1024 * 1024
 
 
-    # ── 大模型（DeepSeek）──
-    deepseek_api_key: str                                   # 必填：DeepSeek 的 API Key
-    deepseek_base_url: str = "https://api.deepseek.com/v1"  # DeepSeek 接口地址
-    deepseek_model_chat: str = "deepseek-chat"              # 对话模型名
-    deepseek_model_coder: str = "deepseek-coder"            # 代码模型名
+    # ── LLM 大模型调用 ──
+    llm_base_url: str
+    llm_api_key: SecretStr
+    llm_model: str
 
 
     # ── 本地模型权重路径 ──

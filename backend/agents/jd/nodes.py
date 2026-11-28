@@ -278,9 +278,9 @@ async def extract_structured_node(state: JDParseState) -> dict:
                 "validation_issues": [], "error": None}
     for attempt in range(MODEL_ATTEMPTS):
         try:
-            model = get_llm("jd_parser")
+            model = get_llm("jd")
             metadata["model_name"] = getattr(model, "model_name", None) or getattr(model, "model", None)
-            structured_model = get_structured_llm("jd_parser", JDExtraction)
+            structured_model = get_structured_llm("jd", JDExtraction)
             result = await asyncio.wait_for(structured_model.ainvoke([
                 SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt),
             ]), timeout=MODEL_TIMEOUT_SECONDS)

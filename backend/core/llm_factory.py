@@ -1,5 +1,5 @@
 # backend/core/llm_factory.py
-# LLM Factory：统一封装大模型调用，按 Agent 类型路由。
+# OpenAI 兼容模型入口。
 # 规矩：所有 Agent 必须通过此模块获取模型，禁止直接调用 init_chat_model。
 
 from typing import Type, Any                          # 类型注解用：Type 表示「某个类本身」，Any 表示任意类型
@@ -25,15 +25,15 @@ _HTTP_SYNC_CLIENT = httpx.Client(                             # 同步客户端�
     timeout=httpx.Timeout(120.0, connect=15.0),
 )
 
-# Agent 类型 → 模型标识符 的路由表
+# Agent 类型 → 模型标识符
 _AGENT_MODEL_ROUTING: dict[str, str] = {
-    "resume":           "deepseek-chat",   # 简历审查
-    "jd_parser":        "deepseek-chat",   # JD 结构化解析
+    "resume":   "default",  # 简历审查
+    "jd":       "default",      # JD 解析与评估规则生成
 }
 
-# 模型标识符（实际模型） → DeepSeek API 实际接受的 model 名称
+# 模型标识符 → 中转站接受的实际模型 ID
 _MODEL_ID_MAP: dict[str, str] = {
-    "deepseek-chat": "deepseek-v4-pro",
+    "default": get_settings().llm_model,
 }
 
 # 大模型工厂（统一获取模型的唯一入口）
@@ -56,10 +56,10 @@ class LLMFactory:
 
         return {
             "model": model_id,                     # 模型名，如 "deepseek-chat"
-            "model_provider": "openai",            # 强制走 langchain-openai（DeepSeek 兼容 OpenAI 接口）
+            "model_provider": "openai",            # 使用 OpenAI 兼容接口
             "temperature": 0,                      # 默认 0：评分/批改要稳定输出
-            "api_key": settings.deepseek_api_key,  # 来自 .env.local
-            "base_url": settings.deepseek_base_url,# DeepSeek 接口地址
+            "api_key": settings.llm_api_key,  # 来自 .env.local
+            "base_url": settings.llm_base_url,
             "max_retries": 0,                      # 模型层不重试；重试统一由 retry.py（3.5）管
             "http_async_client": _HTTP_ASYNC_CLIENT,  # 用上面绕过代理的异步客户端
             "http_client": _HTTP_SYNC_CLIENT,         # 同步客户端
@@ -78,7 +78,7 @@ class LLMFactory:
         if agent_type not in _AGENT_MODEL_ROUTING:
             raise ValueError(
                 f"未知 agent_type: '{agent_type}'，"
-                f"可用类型：{list(_AGENT_MODEL_ROUTING.keys())}"
+                f"可用类型：{list(_AGENT_MODEL_ROUTING)}"
             )
 
         # 查路由表，拿到模型标识符(模型厂商)
@@ -121,7 +121,7 @@ class LLMFactory:
         # 先拿普通模型
         llm = cls.get_llm(agent_type, temperature=temperature)
 
-        # 绑定 Pydantic 结构；method="function_calling" 是 DeepSeek 必须的（回顾 2.3）
+        # 通过工具调用返回 Pydantic 结构。
         return llm.with_structured_output(output_schema,
                                           method="function_calling")
 
@@ -161,7 +161,7 @@ if __name__ == '__main__':
             name: str = Field(description="姓名")
             age: int = Field(description="年龄（整数）")
 
-        llm_struct = get_structured_llm("qa", PersonInfo)
+        llm_struct = get_structured_llm("jd", PersonInfo)
 
         messages = [SystemMessage(content="你负责从文本中抽取任务信息"),
                     HumanMessage(content="我叫王茂宇，今年23岁")]
