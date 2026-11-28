@@ -1,45 +1,27 @@
-# backend/agents/resume/graph.py
-from langgraph.graph import StateGraph, START, END
+"""招聘简历审查图：原文提取、结构化、六维并行评审、诊断和总结。"""
+from functools import lru_cache
 
-from backend.agents.resume.state import ResumeState
+from langgraph.graph import END, START, StateGraph
+
 from backend.agents.resume.nodes import (
-    upload_to_minio_node,
-    download_pdf_node,
-    extract_text_node,
-    extract_structured_node,
-    run_six_dimensions_node,
-    diagnose_issues_node,
-    generate_summary_node,
-    save_results_node,
+    extract_text_node, extract_structured_node, run_six_dimensions_node,
+    diagnose_issues_node, generate_summary_node,
 )
+from backend.agents.resume.state import ResumeState
 
+
+@lru_cache(maxsize=1)
 def build_resume_graph():
-    """
-    构建并编译简历审查 Agent 的状态图。
-    特点：无分支、无 interrupt、无 checkpointer（一次性任务），六维度并行是性能关键路径。
-    """
-    builder = StateGraph(ResumeState)              # 用 ResumeState 作为图的状态类型
-
-    # ① 注册 8 个节点（节点名 → 节点函数）
-    builder.add_node("upload_to_minio",    upload_to_minio_node)
-    builder.add_node("download_pdf",       download_pdf_node)
-    builder.add_node("extract_text",       extract_text_node)
-    builder.add_node("extract_structured", extract_structured_node)
-    builder.add_node("run_six_dimensions", run_six_dimensions_node)
-    builder.add_node("diagnose_issues",    diagnose_issues_node)
-    builder.add_node("generate_summary",   generate_summary_node)
-    builder.add_node("save_results",       save_results_node)
-
-    # ② 顺次连边：START → … → END（一条直线，无分支）
-    builder.add_edge(START,                 "upload_to_minio")
-    builder.add_edge("upload_to_minio",     "download_pdf")
-    builder.add_edge("download_pdf",        "extract_text")
-    builder.add_edge("extract_text",        "extract_structured")
-    builder.add_edge("extract_structured",  "run_six_dimensions")
-    builder.add_edge("run_six_dimensions",  "diagnose_issues")
-    builder.add_edge("diagnose_issues",     "generate_summary")
-    builder.add_edge("generate_summary",    "save_results")
-    builder.add_edge("save_results",        END)
-
-    # ③ 编译。不传 checkpointer：一次性任务，不需要断点恢复
-    return builder.compile()
+    graph = StateGraph(ResumeState)
+    graph.add_node("extract_text", extract_text_node)
+    graph.add_node("extract_structured", extract_structured_node)
+    graph.add_node("run_six_dimensions", run_six_dimensions_node)
+    graph.add_node("diagnose_issues", diagnose_issues_node)
+    graph.add_node("generate_summary", generate_summary_node)
+    graph.add_edge(START, "extract_text")
+    graph.add_edge("extract_text", "extract_structured")
+    graph.add_edge("extract_structured", "run_six_dimensions")
+    graph.add_edge("run_six_dimensions", "diagnose_issues")
+    graph.add_edge("diagnose_issues", "generate_summary")
+    graph.add_edge("generate_summary", END)
+    return graph.compile()

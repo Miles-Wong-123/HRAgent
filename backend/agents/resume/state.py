@@ -1,8 +1,4 @@
-from typing import Annotated, Optional
 from typing_extensions import TypedDict
-
-from langgraph.graph.message import add_messages      # 消息列表的「追加」合并器（回顾 2.4 拓展）
-from langchain_core.messages import BaseMessage
 
 from pydantic import BaseModel, Field
 
@@ -61,7 +57,7 @@ class DimensionScore(BaseModel):
     """单个评审维度结果。"""
     # dimension/weight 由代码层填（来自 4.5 的 SIX_DIMENSIONS），LLM 不用管，给默认值即可
     dimension:   str            = Field(default="",           description="维度名称（代码层覆盖，LLM 可留空）")
-    score:       int            = Field(                      description="得分 0-100")               # LLM 真正要给的
+    score:       int            = Field(ge=0, le=100, description="得分 0-100")               # LLM 真正要给的
     weight:      float     = Field(default=0.0,          description="权重（代码层覆盖，LLM 可填 0）")
     issues:      list[str]      = Field(default_factory=list, description="该维度问题列表")
     suggestions: list[str]      = Field(default_factory=list, description="改进建议列表")
@@ -91,33 +87,26 @@ class ResumeSummary(BaseModel):
     fit_assessment:    str       = Field(description="对目标岗位的匹配度评估（1句话）")
 
 
-class ResumeState(TypedDict):
-    """简历审查 Agent 完整 State。字段按数据流阶段分组，对应各节点的产出。"""
-    # 请求上下文
-    messages:           Annotated[list[BaseMessage], add_messages]  # 对话消息（追加合并）
-    student_id:         str
-    tenant_id:          str
-    review_id:          str             # resume_reviews 表的 UUID
-    pdf_minio_path:     str             # 对象存储路径（本地模式留空，遗留字段）
-    pdf_local_path:     str             # 本地临时文件路径（真正用的）
+class ScoredDimension(DimensionScore):
+    key: str
 
-    #  解析中间结果
-    raw_text:           str             # extract_text 产出：PDF 全文
-    page_count:         int             # PDF 页数
 
-    # 结构化提取结果
-    structured:         Optional[dict]  # extract_structured 产出：ResumeStructured.model_dump()
+class ResumeReport(BaseModel):
+    structured: ResumeStructured
+    dimension_scores: list[ScoredDimension] = Field(min_length=6, max_length=6)
+    weighted_score: float = Field(ge=0, le=100)
+    issues: list[IssueItem]
+    summary: ResumeSummary
 
-    # 六维度评审结果
-    dimension_scores:   list[dict]      # run_six_dimensions 产出：六维度各一条
-    weighted_score:     float      # 加权综合得分 0-100
 
-    # 逐条问题诊断
-    issues:             list[dict]      # diagnose_issues 产出：IssueItem 列表，按优先级排序
-
-    # 整体评价
-    summary:            Optional[dict]  # generate_summary 产出：ResumeSummary.model_dump()
-
-    # 降级标记
-    fallback_used:      bool
-    structured_output:  Optional[dict]
+class ResumeState(TypedDict, total=False):
+    storage_key: str
+    file_sha256: str
+    jd_context: str
+    raw_text: str
+    page_count: int
+    structured: dict
+    dimension_scores: list[dict]
+    weighted_score: float
+    issues: list[dict]
+    summary: dict

@@ -4,7 +4,6 @@
 解析完成只代表生成了待确认草稿，不代表 HR 已确认或 JD 已发布。
 """
 
-from decimal import Decimal
 from typing import Annotated, Generic, Literal
 from uuid import UUID
 
@@ -88,7 +87,7 @@ class JDRequirement(JDBaseModel, Generic[EvidenceT]):
     # 历史解析结果没有此字段；新解析使用下方更严格的输出结构。
     evaluation_rule: str | None = Field(default=None, min_length=1)
 
-    # 不让模型生成正式条件 ID 或评分权重，留给业务层与 HR 确认流程。
+    # 不让模型生成正式条件 ID，留给业务层与 HR 确认流程。
 
 
 class JDFields(JDBaseModel, Generic[EvidenceT]):
@@ -182,7 +181,6 @@ class JDRequirementDecision(JDBaseModel):
     requirement_id:  UUID | None = None
     importance:      Literal["required", "preferred"]
     evaluation_rule: str = Field(min_length=1)
-    weight:          Decimal = Field(gt=0, le=10000, decimal_places=2)
     description:     str | None = Field(default=None, min_length=1)
     category:        RequirementCategory | None = None
 

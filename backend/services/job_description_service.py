@@ -1,7 +1,6 @@
 """JD 的保存、版本分配和解析执行。解析生成草稿；经 HR 审核后发布。"""
 
 import asyncio
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.agents.jd.state import JDParseInput, JDReviewDecision, JDRuleInput, JDRuleSuggestions, JDStructured
 from backend.config import get_settings
 from backend.core.logger import get_logger
+from backend.services.upload_storage import store_upload
 from backend.dependencies import AsyncSessionLocal, CurrentUser
 
 logger = get_logger(__name__)
@@ -58,7 +58,7 @@ async def get_jd(db: AsyncSession, tenant_id: str, jd_id: UUID) -> dict:
         raise HTTPException(404, "JD 不存在")
     requirements = await db.execute(text("""
         SELECT id, sort_order, description, category, importance, evidence, source,
-               clarification, evaluation_rule, weight, confirmed_by, confirmed_at
+               clarification, evaluation_rule, confirmed_by, confirmed_at
         FROM public.job_requirements WHERE tenant_id = :tenant AND jd_id = :id
         ORDER BY sort_order, id
     """), {"tenant": tenant_id, "id": jd_id})
@@ -122,34 +122,8 @@ async def create_jd(db: AsyncSession, user: CurrentUser, position_id: UUID, sour
 
 
 async def save_upload(file: UploadFile) -> tuple[dict, Path]:
-    """分块接收文件，控制实际字节数，使用随机文件名而非用户路径。"""
-    settings = get_settings()
-    name = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
-    extension = Path(name).suffix.lower()
-    if not name or len(name) > 255 or extension not in {".pdf", ".docx", ".txt", ".md"} or extension not in settings.allowed_jd_extensions:
-        raise HTTPException(422, "请上传 PDF、DOCX、TXT 或 Markdown 文件")
-    key = f"jd/{uuid4().hex}{extension}"
-    root = Path(settings.upload_dir).resolve()
-    path = (root / key).resolve()
-    if not path.is_relative_to(root):
-        raise HTTPException(500, "上传目录配置无效")
-    await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
-    size, digest = 0, hashlib.sha256()
-    try:
-        with path.open("xb") as output:
-            while chunk := await file.read(1024 * 1024):
-                size += len(chunk)
-                if size > settings.upload_max_size_bytes:
-                    raise HTTPException(413, "文件超过上传大小上限")
-                digest.update(chunk)
-                await asyncio.to_thread(output.write, chunk)
-        if size == 0:
-            raise HTTPException(422, "不能上传空文件")
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
-    return {"kind": "file", "storage_key": key, "original_filename": name,
-            "file_format": extension[1:], "file_size_bytes": size, "file_sha256": digest.hexdigest()}, path
+    allowed = set(get_settings().allowed_jd_extensions) & {".pdf", ".docx", ".txt", ".md"}
+    return await store_upload(file, "jd", allowed, "请上传 PDF、DOCX、TXT 或 Markdown 文件")
 
 
 async def _claim_parse(user: CurrentUser, jd_id: UUID) -> tuple[JDParseInput, str, datetime]:
@@ -311,9 +285,9 @@ async def _publish_review(conn, jd, tenant_id, decision: JDReviewDecision, revie
         if item.requirement_id is None:
             await conn.execute("""
                 INSERT INTO public.job_requirements
-                    (tenant_id, jd_id, sort_order, description, category, importance, source, evaluation_rule, weight)
-                VALUES (%s, %s, %s, %s, %s, %s, 'manual', %s, %s)
-            """, (*scope, next_order, item.description, item.category, item.importance, item.evaluation_rule, item.weight))
+                    (tenant_id, jd_id, sort_order, description, category, importance, source, evaluation_rule)
+                VALUES (%s, %s, %s, %s, %s, %s, 'manual', %s)
+            """, (*scope, next_order, item.description, item.category, item.importance, item.evaluation_rule))
             next_order += 1
             continue
         old = existing[item.requirement_id]
@@ -325,14 +299,14 @@ async def _publish_review(conn, jd, tenant_id, decision: JDReviewDecision, revie
         # 人工改写后，AI 原始描述与引用仍保存在 structured_data。
         await conn.execute("""
             UPDATE public.job_requirements
-            SET description=%s, category=%s, importance=%s, evaluation_rule=%s, weight=%s,
+            SET description=%s, category=%s, importance=%s, evaluation_rule=%s,
                 source=CASE WHEN %s THEN 'manual' ELSE source END,
                 evidence=CASE WHEN %s THEN '[]'::jsonb ELSE evidence END,
                 clarification=NULL, confirmed_by=NULL, confirmed_at=NULL
             WHERE tenant_id=%s AND jd_id=%s AND id=%s
-        """, (description, category, item.importance, item.evaluation_rule, item.weight,
+        """, (description, category, item.importance, item.evaluation_rule,
               changed, changed, *scope, item.requirement_id))
-    # 010 的触发器要求编辑内容与标记确认分两次写入。
+    # JD 筛选条件触发器要求编辑内容与标记确认分两次写入。
     await conn.execute("""
         UPDATE public.job_requirements SET confirmed_by=%s, confirmed_at=NOW()
         WHERE tenant_id=%s AND jd_id=%s
@@ -387,7 +361,7 @@ async def run_jd_review(tenant_id: str, jd_id: UUID, decision: JDReviewDecision 
             raise HTTPException(409, "只有解析完成且尚未发布的草稿可以审核")
         schema = await conn.execute("SELECT to_regclass('jd_hitl.checkpoints') AS checkpoints")
         if (await schema.fetchone())["checkpoints"] is None:
-            raise HTTPException(503, "请先在数据库中执行 011_jd_review_checkpoints.sql")
+            raise HTTPException(503, "缺少 JD 审核检查点表，请核对 scripts/sql/001_schema.sql 中的 jd_hitl 结构")
 
         saver = AsyncPostgresSaver(conn)
 

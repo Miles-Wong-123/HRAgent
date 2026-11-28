@@ -1,0 +1,22 @@
+.review-stages {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
+.review-stage .jd-detail-heading,.review-report .jd-detail-heading {gap:12px;flex-wrap:wrap}
+.review-stage .jd-detail-heading h2,.review-report .jd-detail-heading h2 {margin:0}
+.review-met,.review-completed {background:#e1f3e8;color:#17633f}
+.review-unknown,.review-processing {background:#fbf1d9;color:#755317}
+.review-unmet,.review-failed {background:#faeae4;color:#914730}
+.review-report {margin-top:18px}
+.review-totals,.review-check-title {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.review-requirement {border-top:1px solid var(--border);overflow-wrap:anywhere}
+.review-requirement > summary {padding:15px 0}
+.review-requirement > summary > span:first-child {margin-right:10px}
+.review-body {padding:0 0 15px}
+.review-checks {list-style:none;padding:0;margin:12px 0 0}
+.review-checks li {margin:12px 0 0;padding:12px 14px;border-left:2px solid #bfd4c7;background:#f7f9f6}
+.review-checks p,.review-body p {margin:7px 0}
+.review-text,.review-question,.review-evidence blockquote,.resume-parsed dd {white-space:pre-wrap;overflow-wrap:anywhere}
+.review-evidence {margin:8px 0 0}
+.resume-parsed dl > div {padding:8px 0;border-top:1px solid var(--border)}
+.resume-parsed dt {font-size:13px;font-weight:600}
+.resume-parsed dd {font-size:13px;margin:4px 0 0}
+.resume-parsed dd p {margin:3px 0}
+@media (max-width:760px) {.review-stages {grid-template-columns:1fr}.review-report .jd-detail-heading {align-items:flex-start}}

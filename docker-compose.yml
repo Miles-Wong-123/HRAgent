@@ -1,6 +1,6 @@
 # docker-compose.yml — HRAgent 本地开发环境
 # 启动：docker-compose --env-file .env.local up -d
-# 业务表由数据库控制台手动创建，不自动执行 scripts/init_db.sql。
+# 新数据库由开发者在 SQL Console 中手动执行 scripts/sql/001_schema.sql。
 version: "3.9"
 
 services:

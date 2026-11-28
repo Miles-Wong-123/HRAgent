@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     upload_max_size_mb: int = Field(default=10, gt=0)  # 单个文件大小上限，单位 MiB
     # 环境变量覆盖列表时使用 JSON，如 ALLOWED_JD_EXTENSIONS='[".pdf", ".txt"]'。
     # JD 支持格式是后续上传接口的配置约定，具体解析功能仍需实现。
+    resume_max_pages: int = Field(default=20, gt=0)
     allowed_resume_extensions: list[str] = Field(default_factory=lambda: [".pdf"])
     allowed_jd_extensions: list[str] = Field(default_factory=lambda: [".pdf", ".docx", ".txt", ".md"])
 

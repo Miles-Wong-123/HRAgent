@@ -28,13 +28,9 @@ export default function JDReview({ jd, call, onPublished, onConflict }) {
   const missing = rows.filter(r => !r.removed && r.description.trim() && !r.evaluation_rule.trim());
   const [error, setError] = useState('');
   const blocks = Object.fromEntries(jd.text_blocks.map(block => [block.block_id, block]));
-  // null 表示沿用当前重要性的建议；已有值或 HR 手动输入的值优先。
-  function reviewWeight(row) {
-    return row.weight ?? jd.suggested_weights?.[row.importance] ?? '';
-  }
   function change(key, patch) { setRows(current => current.map(r => r.key === key ? { ...r, ...patch } : r)); }
   function add() {
-    setRows(current => [...current, { key: crypto.randomUUID(), description: '', category: 'skill', importance: 'unspecified', evaluation_rule: '', weight: null, evidence: [] }]);
+    setRows(current => [...current, { key: crypto.randomUUID(), description: '', category: 'skill', importance: 'unspecified', evaluation_rule: '', evidence: [] }]);
   }
   async function suggestRules() {
     if (generating || busy || !missing.length) return;
@@ -60,7 +56,7 @@ export default function JDReview({ jd, call, onPublished, onConflict }) {
     }
     const requirements = retained.map(r => ({
       ...(r.id ? { requirement_id: r.id } : {}), description: r.description.trim(), category: r.category,
-      importance: r.importance, evaluation_rule: r.evaluation_rule.trim(), weight: Number(reviewWeight(r)),
+      importance: r.importance, evaluation_rule: r.evaluation_rule.trim(),
     }));
     const position_edits = {};
     for (const key of Object.keys(fields)) {
@@ -104,13 +100,12 @@ export default function JDReview({ jd, call, onPublished, onConflict }) {
             <div className="jd-controls">
               <label>类别<select value={row.category} onChange={e => change(row.key,{category:e.target.value})}>{Object.entries(categories).map(([k,n]) => <option key={k} value={k}>{n}</option>)}</select></label>
               <label>重要性<select required value={row.importance === 'unspecified' ? '' : row.importance} onChange={e => change(row.key,{importance:e.target.value})}><option value="">请选择</option><option value="required">必备</option><option value="preferred">优先</option></select></label>
-              <label>相对权重<input type="number" min=".01" max="10000" step=".01" required value={reviewWeight(row)} onChange={e => change(row.key,{weight:e.target.value})} /></label>
             </div>
             <label>评估规则<textarea required rows={2} value={row.evaluation_rule} onChange={e => change(row.key,{evaluation_rule:e.target.value})} placeholder="描述应从简历中核对哪些证据" /></label>
             <Evidence items={row.evidence} blocks={blocks} />
           </>}
         </> : <>
-          <strong>{row.description}</strong><p className="jd-meta">{importance[row.importance]} · {categories[row.category]} · 相对权重 {row.weight}</p>
+          <strong>{row.description}</strong><p className="jd-meta">{importance[row.importance]} · {categories[row.category]}</p>
           <p>{row.evaluation_rule}</p><Evidence items={row.evidence} blocks={blocks} />
         </>}
       </article>)}

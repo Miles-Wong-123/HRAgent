@@ -2,22 +2,23 @@
 
 #  0 导包
 import asyncio
-import json
-import os
+import hashlib
+from pathlib import Path
+
+import fitz
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from sqlalchemy import text
+from backend.config import get_settings
 
 from backend.agents.resume.state import (
     ResumeState, ResumeStructured, DimensionScore, IssueList, ResumeSummary,
 )
 from backend.agents.resume.prompts import (
-    SYSTEM_PROMPT, EXTRACT_STRUCTURED_PROMPT, DIMENSION_REVIEW_PROMPTS,
+    SYSTEM_PROMPT, EXTRACT_STRUCTURED_PROMPT, DIMENSION_REVIEW_PROMPT,
     DIAGNOSE_ISSUES_PROMPT, GENERATE_SUMMARY_PROMPT, DIAGNOSE_THINK_PROMPT,
 )
 from backend.core.llm_factory import get_structured_llm, get_llm
 from backend.core.logger import get_logger
-from backend.dependencies import AsyncSessionLocal
 
 #  1 准备工作
 logger = get_logger(__name__)
@@ -28,13 +29,13 @@ SIX_DIMENSIONS = [
         "key":    "project_depth",
         "name":   "项目深度",
         "weight":  0.30,
-        "focus":  "项目描述是否有量化数据、技术选型理由、个人贡献、难点解决"
+        "focus":  "项目描述是否有量化数据、方案选择理由、个人贡献、难点解决"
     },
     {
         "key":    "tech_match",
         "name":   "技术匹配度",
         "weight":  0.25,
-        "focus":  "技术栈是否与目标岗位匹配，技能描述是否有层次（熟练/了解/掌握）"
+        "focus":  "按选定 JD 的必备与优先条件核对专业技能、工具与实际应用；适用于技术及非技术岗位"
     },
     {
         "key":     "expression",
@@ -52,98 +53,56 @@ SIX_DIMENSIONS = [
         "key":    "quantification",
         "name":   "量化程度",
         "weight":  0.10,
-        "focus":  "性能指标、用户量、优化幅度等量化数据的使用情况"},
+        "focus":  "与岗位相关的规模、数量、转化率、成本或效果指标的使用情况"},
     {
         "key":    "authenticity",
         "name":   "真实可信度",
         "weight":  0.05,
-        "focus":  "表述是否夸大、技术深度描述是否与经验年限匹配、时间线是否合理"},
+        "focus":  "核对时间线、职责、成果和数字的内部一致性，指出有原文依据的矛盾与待核实处；不得据此推断诚信或认定造假"},
 ]
 
-# 节点①②：本地模式空跑（保留以对齐结构 / 预留对象存储扩展点）
-async def upload_to_minio_node(state: ResumeState) -> dict:
-    """文件已在本地，无需上传对象存储，直接跳过。"""
-    logger.info("upload_to_minio.skip", review_id=state["review_id"], reason="local_mode")
-    return {}
-async def download_pdf_node(state: ResumeState) -> dict:
-    """文件已在 pdf_local_path，无需下载，直接跳过。"""
-    logger.info("download_pdf.skip", review_id=state["review_id"], reason="local_file_exists")
-    return {}
+class ResumeError(Exception):
+    """返回给 HR 的业务错误。"""
 
 
-#  2 节点extract_text_node：提取pdf中的文字 -> 新增一个 raw_text 键 和 page_count 键
 async def extract_text_node(state: ResumeState) -> dict:
-    """异步节点：线程池跑同步解析，避免阻塞事件循环。"""
-    pdf_path = state["pdf_local_path"]
+    return await asyncio.to_thread(_sync_extract_text, state["storage_key"], state["file_sha256"])
 
+
+def _sync_extract_text(storage_key: str, file_sha256: str) -> dict:
+    root = get_settings().upload_dir
+    path = (root / storage_key).resolve()
+    if Path(storage_key).is_absolute() or not path.is_relative_to(root / "resumes"):
+        raise ResumeError("简历存储位置无效。")
     try:
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, _sync_extract_text, pdf_path)
-
-        raw_text, page_count = result["raw_text"], result["page_count"]
-
-        if len(raw_text.strip()) < 200:               # 疑似扫描件/图片 PDF，仅告警
-            logger.warning("extract_text.text_too_short", text_length=len(raw_text.strip()))
-
-        logger.info("extract_text.done",
-                    page_count=page_count,
-                    text_length=len(raw_text))
-
-        return { "raw_text": raw_text, "page_count": page_count }
-
-    except Exception as e:
-        logger.error("extract_text.failed",
-                     error=str(e))
-        raise
-
-# PDF 文本提取（双栏处理 + 线程池）
-def _sync_extract_text(pdf_path: str) -> dict:
-    """同步 PDF 文本提取（线程池中运行），处理双栏布局。"""
-    import fitz
-    doc = fitz.open(pdf_path)
-    page_count = len(doc)
-    all_text_parts = []
-
-    for page in doc:
-        blocks = page.get_text("blocks")              # 每块 (x0,y0,x1,y1,text,no,type)
-        text_blocks = [b for b in blocks if b[6] == 0]   # type==0 文字块
-        if not text_blocks:
-            continue
-
-        page_width = page.rect.width
-        midpoint   = page_width / 2
-
-        left_blocks  = [b for b in text_blocks if b[0] < midpoint - 20]
-        right_blocks = [b for b in text_blocks if b[0] >= midpoint - 20]
-        is_two_column = (
-            len(left_blocks) >= 2 and len(right_blocks) >= 2
-            and len(right_blocks) / max(len(text_blocks), 1) > 0.3
-        )
-        if is_two_column:                             # 双栏：左栏读完读右栏
-            left_sorted  = sorted(left_blocks,  key=lambda b: b[1])
-            right_sorted = sorted(right_blocks, key=lambda b: b[1])
-            page_text = (
-                "\n".join(b[4].strip() for b in left_sorted  if b[4].strip())
-                + "\n"
-                + "\n".join(b[4].strip() for b in right_sorted if b[4].strip())
-            )
-        else:                                         # 单栏：按 y 从上到下
-            sorted_blocks = sorted(text_blocks, key=lambda b: b[1])
-            page_text = "\n".join(b[4].strip() for b in sorted_blocks if b[4].strip())
-        all_text_parts.append(page_text)
-
-    doc.close()
-    raw_text = "\n\n---PAGE BREAK---\n\n".join(all_text_parts)
-
-    return {"raw_text": raw_text, "page_count": page_count}
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != file_sha256:
+            raise ResumeError("简历原件与上传记录不一致，请重新上传。")
+        parts = []
+        with fitz.open(stream=data, filetype="pdf") as doc:
+            for page in doc:
+                split = page.rect.width / 2 - 20
+                blocks = [b for b in page.get_text("blocks", sort=True) if b[6] == 0 and b[4].strip()]
+                left = [b for b in blocks if b[0] < split]
+                right = [b for b in blocks if b[0] >= split]
+                if len(left) >= 2 and len(right) >= 2 and len(right) > 0.3 * len(blocks):
+                    blocks = left + right
+                parts.append("\n".join(b[4].strip() for b in blocks))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ResumeError("简历原件无法读取，请核对上传目录。") from exc
+    if not any(parts):
+        raise ResumeError("简历没有可读取的文字。")
+    raw = "\n\n".join(f"第 {i} 页\n{text}" for i, text in enumerate(parts, 1))
+    if len(raw) > 60000:
+        raise ResumeError("简历文字超过单次审查上限，请拆分后上传。")
+    return {"raw_text": raw, "page_count": len(parts)}
 
 
 #  extract_structured LLM 结构化提取
 async def extract_structured_node(state: ResumeState) -> dict:
     """用 LLM Function Calling 把文本提取成结构化简历。"""
     raw_text = state["raw_text"]
-    text_for_llm = raw_text[:4000] if len(raw_text) > 4000 else raw_text   # 超长截断
-    prompt = EXTRACT_STRUCTURED_PROMPT.format(resume_text=text_for_llm)
+    prompt = EXTRACT_STRUCTURED_PROMPT.format(resume_text=raw_text)
 
     structured_llm = get_structured_llm("resume", ResumeStructured)
     structured_dict = None
@@ -160,16 +119,15 @@ async def extract_structured_node(state: ResumeState) -> dict:
             break
         except Exception as e:
             if attempt == 0:
-                logger.warning("extract_structured.retry", error=str(e))
+                logger.warning("extract_structured.retry", error_type=type(e).__name__)
                 await asyncio.sleep(1)
             else:
-                logger.warning("extract_structured.failed", error=str(e))
+                logger.warning("extract_structured.failed", error_type=type(e).__name__)
 
     if structured_dict is None:
-        structured_dict = ResumeStructured(name="未能提取").model_dump()   # 降级空结构
+        raise ResumeError("简历字段提取失败，请重新评审。")
 
     logger.info("extract_structured.done",
-                name=structured_dict.get("name", ""),
                 projects_count=len(structured_dict.get("projects", [])))
 
     return {"structured": structured_dict}
@@ -184,11 +142,9 @@ async def run_six_dimensions_node(state: ResumeState) -> dict:
     structured_summary =    _build_structured_summary(structured)
 
     async def review_one_dimension(dim: dict) -> dict:
-        prompt_template = DIMENSION_REVIEW_PROMPTS.get(dim["key"], "")
-        if not prompt_template:
-            return _empty_dimension_score(dim)
-        prompt = prompt_template.format(
-            resume_text=raw_text[:3000], structured_summary=structured_summary, focus=dim["focus"],
+        prompt = DIMENSION_REVIEW_PROMPT.format(
+            dimension=dim["name"], focus=dim["focus"], jd=state["jd_context"],
+            resume_text=raw_text, structured_summary=structured_summary,
         )
         for attempt in range(2):                      # 最多 2 次尝试
             try:
@@ -202,11 +158,11 @@ async def run_six_dimensions_node(state: ResumeState) -> dict:
                 return d
             except Exception as e:
                 if attempt == 0:
-                    logger.warning("six_dimensions.dimension_retry", dimension=dim["name"], error=str(e))
+                    logger.warning("six_dimensions.dimension_retry", dimension=dim["name"], error_type=type(e).__name__)
                     await asyncio.sleep(1)
                 else:
-                    logger.warning("six_dimensions.dimension_failed", dimension=dim["name"], error=str(e))
-                    return _empty_dimension_score(dim)
+                    logger.warning("six_dimensions.dimension_failed", dimension=dim["name"], error_type=type(e).__name__)
+                    raise ResumeError(f"{dim['name']}评分失败，请重新评审。") from e
 
     tasks = [review_one_dimension(dim) for dim in SIX_DIMENSIONS]
     dimension_scores = await asyncio.gather(*tasks)              # 并行
@@ -227,7 +183,7 @@ def _build_structured_summary(structured: dict) -> str:
         lines.append(f"求职意向：{structured['target_position']}")
     if structured.get("education"):
         edu = structured["education"][0]
-        lines.append(f"最高学历：{edu.get('school','')} {edu.get('major','')} {edu.get('degree','')}")
+        lines.append(f"教育经历：{edu.get('school','')} {edu.get('major','')} {edu.get('degree','')}")
     if structured.get("skills_list"):
         lines.append(f"技术栈：{', '.join(structured['skills_list'][:10])}")
     if structured.get("projects"):
@@ -236,13 +192,6 @@ def _build_structured_summary(structured: dict) -> str:
     if structured.get("work_experience"):
         lines.append(f"工作经历：{len(structured['work_experience'])} 段")
     return "\n".join(lines) if lines else "（结构化提取失败，请基于原文评审）"
-
-def _empty_dimension_score(dim: dict) -> dict:
-    """维度评审失败时的降级结果。"""
-    return {"key": dim["key"], "dimension": dim["name"], "score": 50, "weight": dim["weight"],
-            "issues": ["该维度评审失败，建议人工复核"], "suggestions": []}
-
-
 
 #  diagnose_issues 逐条问题诊断
 async def diagnose_issues_node(state: ResumeState) -> dict:
@@ -272,14 +221,14 @@ async def diagnose_issues_node(state: ResumeState) -> dict:
             else str(think_resp.content)
         ).strip()
     except Exception as e:
-        logger.warning("diagnose_think.failed", error=str(e))
+        logger.warning("diagnose_think.failed", error_type=type(e).__name__)
 
     think_context = f"\n\n【诊断前宏观分析】\n{reasoning_trace}" if reasoning_trace else ""
 
     prompt = DIAGNOSE_ISSUES_PROMPT.format(
-        resume_text=raw_text[:3000],
+        resume_text=raw_text,
         structured_summary=_build_structured_summary(structured),
-        raw_issues=raw_issues_text,
+        raw_issues=raw_issues_text, jd=state["jd_context"],
     ) + think_context
 
     try:
@@ -288,7 +237,7 @@ async def diagnose_issues_node(state: ResumeState) -> dict:
             SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)])
         issues = [item.model_dump() for item in result.items]
     except Exception as e:
-        logger.warning("diagnose_issues.failed", error=str(e))
+        logger.warning("diagnose_issues.failed", error_type=type(e).__name__)
         issues = [                                    # 降级：用维度问题，统一 medium
             {"priority": "medium", "dimension": dim["dimension"], "description": issue,
              "location": "简历全文", "suggestion": "请参考评审建议修改"}
@@ -304,7 +253,7 @@ async def diagnose_issues_node(state: ResumeState) -> dict:
 
 #  generate_summary  整体评价
 async def generate_summary_node(state: ResumeState) -> dict:
-    """综合结构化信息、评分、问题，生成面向学员的整体评价。"""
+    """综合结构化信息、评分、问题，生成面向 HR的整体评价。"""
     structured       = state.get("structured") or {}
     dimension_scores = state.get("dimension_scores", [])
     issues           = state.get("issues", [])
@@ -318,7 +267,7 @@ async def generate_summary_node(state: ResumeState) -> dict:
     prompt = GENERATE_SUMMARY_PROMPT.format(
         structured_summary=_build_structured_summary(structured),
         scores_summary=scores_text, weighted_score=round(weighted_score, 1),
-        high_issues=high_issues_text, target_position=structured.get("target_position", "后端开发"),
+        high_issues=high_issues_text, target_position=state["jd_context"],
     )
     structured_llm = get_structured_llm("resume", ResumeSummary)
     summary_dict = None
@@ -332,10 +281,10 @@ async def generate_summary_node(state: ResumeState) -> dict:
             break
         except Exception as e:
             if attempt == 0:
-                logger.warning("generate_summary.retry", error=str(e))
+                logger.warning("generate_summary.retry", error_type=type(e).__name__)
                 await asyncio.sleep(1)
             else:
-                logger.warning("generate_summary.failed", error=str(e))
+                logger.warning("generate_summary.failed", error_type=type(e).__name__)
     if summary_dict is None:
         summary_dict = {                              # 降级默认评价
             "highlights": ["简历内容已完整提交"],
@@ -345,56 +294,3 @@ async def generate_summary_node(state: ResumeState) -> dict:
         }
     logger.info("generate_summary.done", highlights_count=len(summary_dict.get("highlights", [])))
     return {"summary": summary_dict}
-
-
-#  save_results 持久化结果
-async def save_results_node(state: ResumeState) -> dict:
-    """把完整结果写入 resume_reviews（JSONB 字段），清理临时文件。"""
-    review_id = state["review_id"]
-
-    # 留一份完整结果给上层（API 可直接用）
-    structured_output = {
-        "review_id":            review_id,
-        "student_id":           state["student_id"],
-        "structured":           state.get("structured"),
-        "weighted_score":       state.get("weighted_score", 0),
-        "dimension_scores":     state.get("dimension_scores", []),
-        "issues":               state.get("issues", []),
-        "summary":              state.get("summary"),
-    }
-
-    async with AsyncSessionLocal() as session:        # 用统一的 SQLAlchemy 异步会话
-        try:
-            await session.execute(
-                text("""
-                    UPDATE resume_reviews
-                    SET structured_data = :structured_data,
-                        scores          = :scores,
-                        issues          = :issues,
-                        summary         = :summary,
-                        status          = 'done',
-                        updated_at      = NOW()
-                    WHERE id = :review_id
-                """),
-                {
-                    # JSONB 列：先 json.dumps 转 JSON 字符串；ensure_ascii=False 保留中文原文
-                    "structured_data":  json.dumps(state.get("structured"), ensure_ascii=False),
-                    "scores":           json.dumps(
-                                        {   "dimension_scores": state.get("dimension_scores", []),
-                                                 "weighted_score": state.get("weighted_score", 0)
-                                            },
-                                            ensure_ascii=False
-                                        ),
-                    "issues":           json.dumps(state.get("issues", []), ensure_ascii=False),
-                    "summary":          json.dumps(state.get("summary"), ensure_ascii=False),
-                    "review_id":        review_id,
-                },
-            )
-            await session.commit()
-            logger.info("save_results.db_written", review_id=review_id)
-        except Exception as e:
-            await session.rollback()
-            logger.error("save_results.db_failed", error=str(e))
-            raise
-
-    return {"fallback_used": False, "structured_output": structured_output}

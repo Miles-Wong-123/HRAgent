@@ -1,7 +1,6 @@
 """JD 接口：保存输入、显式启动解析、查询草稿；所有操作限定本公司。"""
 
 from datetime import datetime
-from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -63,16 +62,11 @@ class JDRequirementResponse(BaseModel):
     source: Literal["ai", "manual"]
     clarification: str | None
     evaluation_rule: str | None
-    weight: Decimal | None
     confirmed_by: UUID | None
     confirmed_at: datetime | None
 
 
 class JDDetail(JDSummary):
-    suggested_weights: dict[Literal["required", "preferred"], int] = Field(
-        default_factory=lambda: {"required": 2, "preferred": 1},
-        description="按重要性给出的审核建议；每条条件的最终权重由 HR 在发布时确认。",
-    )
     published_by: UUID | None
     published_at: datetime | None
     source_text: str | None
@@ -189,7 +183,7 @@ async def review_and_publish(
     """HR 或管理员确认发布本公司的草稿。同岗位之前发布的版本将归档。
 
     从 JD 详情复制每个 requirements[].id 到 requirement_id，逐条指定重要性、
-    评估规则与相对权重。可选填 description、category 或 position_edits 修改草稿。
+    评估规则。可选填 description、category 或 position_edits 修改草稿。
     手动新增条件省略 ID 并填写描述和类别；明确删除的 ID 放入 remove_requirement_ids。
     重复或遗漏条件返回 422；已发布、归档或未解析完成返回 409。
     """
